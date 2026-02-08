@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE = 'https://api.quick-pick.explaingpt.ru'
@@ -15,9 +15,13 @@ function App() {
   const [chatMode, setChatMode] = useState(null)
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState([])
+  const [recording, setRecording] = useState(false)
+  const [micError, setMicError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
+  const recorderRef = useRef(null)
+  const chunksRef = useRef([])
 
   const needsName = (user) =>
     user?.name === null || user?.name === undefined || user?.name === ''
@@ -190,6 +194,8 @@ function App() {
     setChatMode(null)
     setChatInput('')
     setChatMessages([])
+    setRecording(false)
+    setMicError('')
     setStep('email')
   }
 
@@ -199,6 +205,7 @@ function App() {
     setChatMessages([])
     setError('')
     setInfo('')
+    setMicError('')
     setStep('chat')
   }
 
@@ -206,6 +213,8 @@ function App() {
     setChatMode(null)
     setChatInput('')
     setChatMessages([])
+    setRecording(false)
+    setMicError('')
     setStep('main')
   }
 
@@ -255,6 +264,83 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const sendVoice = async (blob) => {
+    setLoading(true)
+    setError('')
+    setInfo('')
+
+    try {
+      const formData = new FormData()
+      formData.append('audio', blob, 'voice.webm')
+      const response = await fetch(
+        `${API_BASE}${chatMode === 'add' ? '/api/voice/add-item' : '/api/voice/search'}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${getAccessToken()}`,
+          },
+          body: formData,
+        }
+      )
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(parseError(data, response.status))
+      }
+
+      if (chatMode === 'add') {
+        appendMessage(
+          'assistant',
+          data?.message || 'Предмет сохранен. Хотите добавить еще?'
+        )
+      } else {
+        appendMessage(
+          'assistant',
+          data?.answer || 'Пока не удалось найти предмет.'
+        )
+      }
+    } catch (err) {
+      appendMessage('assistant', `Ошибка: ${err.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const startRecording = async () => {
+    setMicError('')
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMicError('Браузер не поддерживает запись звука.')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      chunksRef.current = []
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data)
+        }
+      }
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType })
+        stream.getTracks().forEach((track) => track.stop())
+        sendVoice(blob)
+      }
+      recorderRef.current = recorder
+      recorder.start()
+      setRecording(true)
+    } catch {
+      setMicError('Нужен доступ к микрофону.')
+    }
+  }
+
+  const stopRecording = () => {
+    const recorder = recorderRef.current
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop()
+    }
+    setRecording(false)
   }
 
   const getProfileInitial = () => {
@@ -456,6 +542,15 @@ function App() {
             </div>
             <form className="chat-form chat-form-fixed" onSubmit={handleSendMessage}>
               <div className="chat-input-wrap">
+                <button
+                  className={`mic-button ${recording ? 'recording' : ''}`}
+                  type="button"
+                  onClick={recording ? stopRecording : startRecording}
+                  disabled={loading}
+                  aria-label={recording ? 'Остановить запись' : 'Записать голосом'}
+                >
+                  <span aria-hidden="true">🎤</span>
+                </button>
                 <input
                   type="text"
                   placeholder="Введите сообщение..."
@@ -472,6 +567,7 @@ function App() {
                 </button>
               </div>
             </form>
+            {micError && <div className="alert error">{micError}</div>}
           </div>
         )}
 
