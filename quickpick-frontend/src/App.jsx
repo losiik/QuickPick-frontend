@@ -27,13 +27,12 @@ function App() {
     user?.name === null || user?.name === undefined || user?.name === ''
 
   useEffect(() => {
-    const token = getAccessToken()
-    if (!token) {
+    if (!getAccessToken()) {
       return
     }
 
     setLoading(true)
-    fetchSelf(token)
+    fetchSelf()
       .then((user) => {
         setUser(user)
         if (needsName(user)) {
@@ -51,6 +50,7 @@ function App() {
   }, [])
 
   const getAccessToken = () => localStorage.getItem(ACCESS_KEY)
+  const getRefreshToken = () => localStorage.getItem(REFRESH_KEY)
 
   const clearTokens = () => {
     localStorage.removeItem(ACCESS_KEY)
@@ -68,8 +68,11 @@ function App() {
     return `Ошибка ${status}`
   }
 
-  const apiRequest = async (path, { method = 'GET', body, token } = {}) => {
-    const headers = { 'Content-Type': 'application/json' }
+  const fetchJson = async (path, { method = 'GET', body, token, isForm } = {}) => {
+    const headers = {}
+    if (!isForm) {
+      headers['Content-Type'] = 'application/json'
+    }
     if (token) {
       headers.Authorization = `Bearer ${token}`
     }
@@ -77,7 +80,11 @@ function App() {
     const response = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: body
+        ? isForm
+          ? body
+          : JSON.stringify(body)
+        : undefined,
     })
 
     const text = await response.text()
@@ -90,14 +97,52 @@ function App() {
       }
     }
 
-    if (!response.ok) {
-      throw new Error(parseError(data, response.status))
-    }
+    return { response, data, status: response.status, ok: response.ok }
+  }
 
+  const apiRequest = async (path, options) => {
+    const { data, status, ok } = await fetchJson(path, options)
+    if (!ok) {
+      throw new Error(parseError(data, status))
+    }
     return data
   }
 
-  const fetchSelf = (token) => apiRequest('/api/users/self', { token })
+  const refreshAccessToken = async () => {
+    const refreshToken = getRefreshToken()
+    if (!refreshToken) {
+      clearTokens()
+      throw new Error('Нужно войти в аккаунт')
+    }
+    const { data, status, ok } = await fetchJson('/api/auth/token/refresh', {
+      method: 'POST',
+      token: refreshToken,
+    })
+    if (!ok) {
+      clearTokens()
+      throw new Error(parseError(data, status))
+    }
+    saveTokens(data)
+    return data.access_token
+  }
+
+  const apiRequestAuth = async (path, options = {}) => {
+    const accessToken = getAccessToken()
+    if (!accessToken) {
+      throw new Error('Нужно войти в аккаунт')
+    }
+    let result = await fetchJson(path, { ...options, token: accessToken })
+    if (result.status === 401) {
+      const newAccess = await refreshAccessToken()
+      result = await fetchJson(path, { ...options, token: newAccess })
+    }
+    if (!result.ok) {
+      throw new Error(parseError(result.data, result.status))
+    }
+    return result.data
+  }
+
+  const fetchSelf = () => apiRequestAuth('/api/users/self')
 
   const handleRequestCode = async (event) => {
     event.preventDefault()
@@ -141,7 +186,7 @@ function App() {
         body: { email, code },
       })
       saveTokens(data)
-      const user = await fetchSelf(data.access_token)
+      const user = await fetchSelf()
       setUser(user)
       if (needsName(user)) {
         setStep('name')
@@ -168,12 +213,11 @@ function App() {
 
     setLoading(true)
     try {
-      await apiRequest('/api/users/', {
+      await apiRequestAuth('/api/users/', {
         method: 'PATCH',
-        token: getAccessToken(),
         body: { name: name.trim() },
       })
-      const updated = await fetchSelf(getAccessToken())
+      const updated = await fetchSelf()
       setUser(updated)
       setStep('main')
       setInfo('Имя сохранено')
@@ -239,9 +283,8 @@ function App() {
 
     try {
       if (chatMode === 'add') {
-        const data = await apiRequest('/api/items/', {
+        const data = await apiRequestAuth('/api/items/', {
           method: 'POST',
-          token: getAccessToken(),
           body: { text },
         })
         appendMessage(
@@ -249,9 +292,8 @@ function App() {
           data?.message || 'Предмет сохранен. Хотите добавить еще?'
         )
       } else {
-        const data = await apiRequest('/api/items/search', {
+        const data = await apiRequestAuth('/api/items/search', {
           method: 'POST',
-          token: getAccessToken(),
           body: { query: text },
         })
         appendMessage(
@@ -274,20 +316,14 @@ function App() {
     try {
       const formData = new FormData()
       formData.append('audio', blob, 'voice.webm')
-      const response = await fetch(
-        `${API_BASE}${chatMode === 'add' ? '/api/voice/add-item' : '/api/voice/search'}`,
+      const data = await apiRequestAuth(
+        chatMode === 'add' ? '/api/voice/add-item' : '/api/voice/search',
         {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${getAccessToken()}`,
-          },
           body: formData,
+          isForm: true,
         }
       )
-      const data = await response.json()
-      if (!response.ok) {
-        throw new Error(parseError(data, response.status))
-      }
 
       if (chatMode === 'add') {
         appendMessage(
