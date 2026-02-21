@@ -211,6 +211,22 @@ button:disabled {
   gap: 16px;
 }
 
+.items-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.item-pill {
+  background: #e8f1ff;
+  border: 1px solid rgba(39, 74, 120, 0.16);
+  border-radius: 999px;
+  padding: 10px 14px;
+  color: var(--ink-800);
+  font-size: 1rem;
+  text-align: center;
+}
+
 .profile-row {
   display: flex;
   align-items: center;

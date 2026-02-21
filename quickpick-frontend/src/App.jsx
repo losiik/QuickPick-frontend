@@ -19,6 +19,7 @@ function App() {
   const [chatMessages, setChatMessages] = useState([])
   const [recording, setRecording] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
+  const [items, setItems] = useState([])
   const [micError, setMicError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -260,6 +261,7 @@ function App() {
     setChatMode(null)
     setChatInput('')
     setChatMessages([])
+    setItems([])
     setRecording(false)
     setMicError('')
     setStep('email')
@@ -281,6 +283,34 @@ function App() {
     setChatMessages([])
     setRecording(false)
     setMicError('')
+    setStep('main')
+  }
+
+  const openItems = async () => {
+    setError('')
+    setInfo('')
+    setLoading(true)
+    try {
+      const data = await apiRequestAuth('/api/items/self')
+      const unique = new Map()
+      ;(data || []).forEach((item) => {
+        const name = item?.item_name?.trim()
+        if (!name) return
+        const key = name.toLowerCase()
+        if (!unique.has(key)) {
+          unique.set(key, name)
+        }
+      })
+      setItems(Array.from(unique.values()))
+      setStep('items')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const closeItems = () => {
     setStep('main')
   }
 
@@ -578,10 +608,35 @@ function App() {
               >
                 Добавить предмет
               </button>
+              <button className="ghost" type="button" onClick={openItems}>
+                Мои предметы
+              </button>
             </div>
           </div>
         )}
 
+        {step === 'items' && (
+          <div className="stack">
+            <button className="back-button" type="button" onClick={closeItems}>
+              <span aria-hidden="true">←</span> На главный экран
+            </button>
+            <h1 className="title">Мои предметы</h1>
+            <p className="subtitle">
+              Здесь показаны уникальные предметы, которые вы добавляли.
+            </p>
+            <div className="items-list">
+              {items.length === 0 ? (
+                <div className="chat-empty">Пока нет добавленных предметов.</div>
+              ) : (
+                items.map((item) => (
+                  <div key={item} className="item-pill">
+                    {item}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
         {step === 'chat' && (
           <div className="stack chat-screen">
             <button className="back-button" type="button" onClick={closeChat}>
