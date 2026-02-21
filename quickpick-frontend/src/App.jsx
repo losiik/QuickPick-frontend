@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import micIcon from './assets/ButtonMedium.svg'
+import sendIcon from './assets/Search.svg'
 import './App.css'
 
 const API_BASE = 'https://api.quick-pick.explaingpt.ru'
@@ -16,12 +18,15 @@ function App() {
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState([])
   const [recording, setRecording] = useState(false)
+  const [recordSeconds, setRecordSeconds] = useState(0)
   const [micError, setMicError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
   const recorderRef = useRef(null)
   const chunksRef = useRef([])
+  const recordStartRef = useRef(null)
+  const lastRecordSecondsRef = useRef(0)
 
   const needsName = (user) =>
     user?.name === null || user?.name === undefined || user?.name === ''
@@ -48,6 +53,23 @@ function App() {
       })
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    if (!recording) {
+      setRecordSeconds(0)
+      recordStartRef.current = null
+      return
+    }
+
+    recordStartRef.current = Date.now()
+    const timer = setInterval(() => {
+      if (!recordStartRef.current) return
+      const diff = Math.floor((Date.now() - recordStartRef.current) / 1000)
+      setRecordSeconds(diff)
+    }, 500)
+
+    return () => clearInterval(timer)
+  }, [recording])
 
   const getAccessToken = () => localStorage.getItem(ACCESS_KEY)
   const getRefreshToken = () => localStorage.getItem(REFRESH_KEY)
@@ -308,7 +330,11 @@ function App() {
     }
   }
 
-  const sendVoice = async (blob) => {
+  const sendVoice = async (blob, durationSeconds = 0) => {
+    appendMessage(
+      'user',
+      `Голосовое сообщение${durationSeconds ? ` (${formatSeconds(durationSeconds)})` : ''}`
+    )
     setLoading(true)
     setError('')
     setInfo('')
@@ -361,7 +387,7 @@ function App() {
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType })
         stream.getTracks().forEach((track) => track.stop())
-        sendVoice(blob)
+        sendVoice(blob, lastRecordSecondsRef.current)
       }
       recorderRef.current = recorder
       recorder.start()
@@ -372,11 +398,18 @@ function App() {
   }
 
   const stopRecording = () => {
+    lastRecordSecondsRef.current = recordSeconds
     const recorder = recorderRef.current
     if (recorder && recorder.state !== 'inactive') {
       recorder.stop()
     }
     setRecording(false)
+  }
+
+  const formatSeconds = (value) => {
+    const minutes = String(Math.floor(value / 60)).padStart(2, '0')
+    const seconds = String(value % 60).padStart(2, '0')
+    return `${minutes}:${seconds}`
   }
 
   const getProfileInitial = () => {
@@ -577,16 +610,18 @@ function App() {
               )}
             </div>
             <form className="chat-form chat-form-fixed" onSubmit={handleSendMessage}>
+              {recording && (
+                <div className="recording-bar" aria-live="polite">
+                  <div className="recording-dot" aria-hidden="true" />
+                  <div className="recording-wave" aria-hidden="true">
+                    {Array.from({ length: 20 }).map((_, index) => (
+                      <span key={index} style={{ animationDelay: `${index * 0.06}s` }} />
+                    ))}
+                  </div>
+                  <div className="recording-time">{formatSeconds(recordSeconds)}</div>
+                </div>
+              )}
               <div className="chat-input-wrap">
-                <button
-                  className={`mic-button ${recording ? 'recording' : ''}`}
-                  type="button"
-                  onClick={recording ? stopRecording : startRecording}
-                  disabled={loading}
-                  aria-label={recording ? 'Остановить запись' : 'Записать голосом'}
-                >
-                  <span aria-hidden="true">🎤</span>
-                </button>
                 <input
                   type="text"
                   placeholder="Введите сообщение..."
@@ -594,12 +629,21 @@ function App() {
                   onChange={(event) => setChatInput(event.target.value)}
                 />
                 <button
+                  className={`mic-button ${recording ? 'recording' : ''}`}
+                  type="button"
+                  onClick={recording ? stopRecording : startRecording}
+                  disabled={loading}
+                  aria-label={recording ? 'Остановить запись' : 'Записать голосом'}
+                >
+                  <img src={micIcon} alt="" className="mic-icon" />
+                </button>
+                <button
                   className="send-button"
                   type="submit"
                   disabled={loading}
                   aria-label="Отправить"
                 >
-                  <span aria-hidden="true">↑</span>
+                  <img src={sendIcon} alt="" className="send-icon" />
                 </button>
               </div>
             </form>
