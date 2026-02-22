@@ -24,6 +24,7 @@ function App() {
   const [attachmentError, setAttachmentError] = useState('')
   const [attachPromptItemId, setAttachPromptItemId] = useState(null)
   const [showAttachPicker, setShowAttachPicker] = useState(false)
+  const [attachmentName, setAttachmentName] = useState('')
   const [micError, setMicError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -33,6 +34,7 @@ function App() {
   const recordStartRef = useRef(null)
   const lastRecordSecondsRef = useRef(0)
   const fileInputRef = useRef(null)
+  const cameraInputRef = useRef(null)
 
   const needsName = (user) =>
     user?.name === null || user?.name === undefined || user?.name === ''
@@ -271,6 +273,7 @@ function App() {
     setMicError('')
     setAttachmentFile(null)
     setAttachmentError('')
+    setAttachmentName('')
     setAttachPromptItemId(null)
     setShowAttachPicker(false)
     setStep('email')
@@ -285,6 +288,7 @@ function App() {
     setMicError('')
     setAttachmentFile(null)
     setAttachmentError('')
+    setAttachmentName('')
     setAttachPromptItemId(null)
     setShowAttachPicker(false)
     setStep('chat')
@@ -298,6 +302,7 @@ function App() {
     setMicError('')
     setAttachmentFile(null)
     setAttachmentError('')
+    setAttachmentName('')
     setAttachPromptItemId(null)
     setShowAttachPicker(false)
     setStep('main')
@@ -536,6 +541,22 @@ function App() {
     }
   }
 
+  const handlePickCamera = () => {
+    if (cameraInputRef.current) {
+      cameraInputRef.current.click()
+    }
+  }
+
+  const shortenFileName = (name) => {
+    if (!name) return ''
+    if (name.length <= 24) return name
+    const dot = name.lastIndexOf('.')
+    const ext = dot > 0 ? name.slice(dot) : ''
+    const base = dot > 0 ? name.slice(0, dot) : name
+    const trimmed = base.slice(0, 16)
+    return `${trimmed}...${ext || ''}`
+  }
+
   const handleFileChange = (event) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -546,13 +567,18 @@ function App() {
     }
     setAttachmentError('')
     setAttachmentFile(file)
+    setAttachmentName(shortenFileName(file.name))
   }
 
   const clearAttachment = () => {
     setAttachmentFile(null)
     setAttachmentError('')
+    setAttachmentName('')
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
+    }
+    if (cameraInputRef.current) {
+      cameraInputRef.current.value = ''
     }
   }
 
@@ -864,7 +890,14 @@ function App() {
                         type="button"
                         onClick={handlePickFile}
                       >
-                        Выбрать фото
+                        Из галереи
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={handlePickCamera}
+                      >
+                        Сделать фото
                       </button>
                       <button
                         className="ghost"
@@ -881,13 +914,20 @@ function App() {
                       ref={fileInputRef}
                       type="file"
                       accept="image/*"
+                      className="file-input"
+                      onChange={handleFileChange}
+                    />
+                    <input
+                      ref={cameraInputRef}
+                      type="file"
+                      accept="image/*"
                       capture="environment"
                       className="file-input"
                       onChange={handleFileChange}
                     />
                     {attachmentFile && (
                       <div className="attachment-chip">
-                        <span>{attachmentFile.name}</span>
+                        <span>{attachmentName || attachmentFile.name}</span>
                         <button type="button" onClick={clearAttachment}>
                           ✕
                         </button>

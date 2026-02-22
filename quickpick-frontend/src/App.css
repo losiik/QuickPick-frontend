@@ -434,6 +434,11 @@ button:disabled {
   padding: 0 6px;
 }
 
+.attachment-chip .primary {
+  padding: 8px 12px;
+  font-size: 0.95rem;
+}
+
 .attach-prompt {
   width: min(720px, 100%);
   margin: 0 auto;
