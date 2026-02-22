@@ -318,6 +318,19 @@ button:disabled {
   color: var(--ink-900);
 }
 
+.chat-message.image {
+  padding: 6px;
+  background: #fff;
+}
+
+.chat-image {
+  max-width: 220px;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  display: block;
+}
+
 .chat-form {
   display: flex;
   gap: 12px;
@@ -349,6 +362,10 @@ button:disabled {
   padding: 8px 10px 8px 16px;
   border: 1px solid rgba(39, 74, 120, 0.16);
   box-shadow: 0 12px 24px rgba(20, 45, 90, 0.1);
+}
+
+.file-input {
+  display: none;
 }
 
 .chat-form input {
@@ -391,6 +408,53 @@ button:disabled {
   height: 18px;
   display: block;
   filter: brightness(0) invert(1);
+}
+
+.attachment-chip {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  background: #e8f1ff;
+  border: 1px solid rgba(39, 74, 120, 0.16);
+  border-radius: 12px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.95rem;
+  color: var(--ink-800);
+}
+
+.attachment-chip button {
+  border: none;
+  background: transparent;
+  color: var(--ink-700);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 6px;
+}
+
+.attach-prompt {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  background: #f2f6ff;
+  border: 1px solid rgba(39, 74, 120, 0.16);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.attach-text {
+  color: var(--ink-800);
+  font-size: 1rem;
+}
+
+.attach-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .mic-button {

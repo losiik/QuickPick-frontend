@@ -20,6 +20,10 @@ function App() {
   const [recording, setRecording] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
   const [items, setItems] = useState([])
+  const [attachmentFile, setAttachmentFile] = useState(null)
+  const [attachmentError, setAttachmentError] = useState('')
+  const [attachPromptItemId, setAttachPromptItemId] = useState(null)
+  const [showAttachPicker, setShowAttachPicker] = useState(false)
   const [micError, setMicError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -28,6 +32,7 @@ function App() {
   const chunksRef = useRef([])
   const recordStartRef = useRef(null)
   const lastRecordSecondsRef = useRef(0)
+  const fileInputRef = useRef(null)
 
   const needsName = (user) =>
     user?.name === null || user?.name === undefined || user?.name === ''
@@ -264,6 +269,10 @@ function App() {
     setItems([])
     setRecording(false)
     setMicError('')
+    setAttachmentFile(null)
+    setAttachmentError('')
+    setAttachPromptItemId(null)
+    setShowAttachPicker(false)
     setStep('email')
   }
 
@@ -274,6 +283,10 @@ function App() {
     setError('')
     setInfo('')
     setMicError('')
+    setAttachmentFile(null)
+    setAttachmentError('')
+    setAttachPromptItemId(null)
+    setShowAttachPicker(false)
     setStep('chat')
   }
 
@@ -283,6 +296,10 @@ function App() {
     setChatMessages([])
     setRecording(false)
     setMicError('')
+    setAttachmentFile(null)
+    setAttachmentError('')
+    setAttachPromptItemId(null)
+    setShowAttachPicker(false)
     setStep('main')
   }
 
@@ -315,7 +332,58 @@ function App() {
   }
 
   const appendMessage = (role, text) => {
-    setChatMessages((prev) => [...prev, { role, text }])
+    setChatMessages((prev) => [...prev, { role, type: 'text', text }])
+  }
+
+  const appendImage = (src, alt = 'Изображение') => {
+    setChatMessages((prev) => [
+      ...prev,
+      { role: 'assistant', type: 'image', src, alt },
+    ])
+  }
+
+  const extractAttachmentUrls = (attachments) => {
+    if (!Array.isArray(attachments)) return []
+    return attachments
+      .map((item) => item?.url)
+      .filter((url) => typeof url === 'string' && url.length > 0)
+  }
+
+  const fetchAttachmentUrls = async (itemId) => {
+    if (!itemId) return null
+    const data = await apiRequestAuth(`/api/attachments/item/${itemId}`)
+    return extractAttachmentUrls(data)
+  }
+
+  const fetchImageAsObjectUrl = async (url) => {
+    if (!url) return null
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${getAccessToken()}`,
+        },
+      })
+      if (!response.ok) return null
+      const blob = await response.blob()
+      return URL.createObjectURL(blob)
+    } catch {
+      return null
+    }
+  }
+
+  const maybeShowAttachmentForSearch = async (items) => {
+    const first = Array.isArray(items) ? items.find((item) => item?.id) : null
+    if (!first?.id) return
+    try {
+      const urls = await fetchAttachmentUrls(first.id)
+      if (!urls || urls.length === 0) return
+      for (const url of urls) {
+        const objectUrl = await fetchImageAsObjectUrl(url)
+        appendImage(objectUrl || url)
+      }
+    } catch {
+      // ignore attachment errors
+    }
   }
 
   const handleSendMessage = async (event) => {
@@ -343,6 +411,10 @@ function App() {
           'assistant',
           data?.message || 'Предмет сохранен. Хотите добавить еще?'
         )
+        if (data?.item?.id) {
+          setAttachPromptItemId(data.item.id)
+          setShowAttachPicker(false)
+        }
       } else {
         const data = await apiRequestAuth('/api/items/search', {
           method: 'POST',
@@ -352,6 +424,7 @@ function App() {
           'assistant',
           data?.answer || 'Пока не удалось найти предмет.'
         )
+        await maybeShowAttachmentForSearch(data?.items)
       }
     } catch (err) {
       appendMessage('assistant', `Ошибка: ${err.message}`)
@@ -386,11 +459,16 @@ function App() {
           'assistant',
           data?.message || 'Предмет сохранен. Хотите добавить еще?'
         )
+        if (data?.item?.id) {
+          setAttachPromptItemId(data.item.id)
+          setShowAttachPicker(false)
+        }
       } else {
         appendMessage(
           'assistant',
           data?.answer || 'Пока не удалось найти предмет.'
         )
+        await maybeShowAttachmentForSearch(data?.items)
       }
     } catch (err) {
       appendMessage('assistant', `Ошибка: ${err.message}`)
@@ -450,6 +528,54 @@ function App() {
   }
 
   const isChat = step === 'chat'
+  const canAttach = chatMode === 'add'
+
+  const handlePickFile = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click()
+    }
+  }
+
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setAttachmentError('Можно прикреплять только изображения.')
+      setAttachmentFile(null)
+      return
+    }
+    setAttachmentError('')
+    setAttachmentFile(file)
+  }
+
+  const clearAttachment = () => {
+    setAttachmentFile(null)
+    setAttachmentError('')
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const uploadAttachment = async () => {
+    if (!attachmentFile || !attachPromptItemId) {
+      return
+    }
+    try {
+      const formData = new FormData()
+      formData.append('file', attachmentFile)
+      await apiRequestAuth(`/api/attachments/upload/${attachPromptItemId}`, {
+        method: 'POST',
+        body: formData,
+        isForm: true,
+      })
+      appendMessage('assistant', 'Изображение прикреплено.')
+      clearAttachment()
+      setAttachPromptItemId(null)
+      setShowAttachPicker(false)
+    } catch (err) {
+      appendMessage('assistant', `Ошибка прикрепления: ${err.message}`)
+    }
+  }
 
   return (
     <div className={`app ${isChat ? 'app-chat' : ''}`}>
@@ -657,9 +783,17 @@ function App() {
                 chatMessages.map((message, index) => (
                   <div
                     key={`${message.role}-${index}`}
-                    className={`chat-message ${message.role}`}
+                    className={`chat-message ${message.role} ${message.type}`}
                   >
-                    {message.text}
+                    {message.type === 'image' ? (
+                      <img
+                        src={message.src}
+                        alt={message.alt || 'Изображение'}
+                        className="chat-image"
+                      />
+                    ) : (
+                      message.text
+                    )}
                   </div>
                 ))
               )}
@@ -702,7 +836,76 @@ function App() {
                 </button>
               </div>
             </form>
+            {canAttach && attachPromptItemId && (
+              <div className="attach-prompt">
+                <div className="attach-text">Хотите добавить изображение?</div>
+                {!showAttachPicker ? (
+                  <div className="attach-actions">
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() => setShowAttachPicker(true)}
+                    >
+                      Да, добавить
+                    </button>
+                    <button
+                      className="ghost"
+                      type="button"
+                      onClick={() => setAttachPromptItemId(null)}
+                    >
+                      Нет, спасибо
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="attach-actions">
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={handlePickFile}
+                      >
+                        Выбрать фото
+                      </button>
+                      <button
+                        className="ghost"
+                        type="button"
+                        onClick={() => {
+                          clearAttachment()
+                          setShowAttachPicker(false)
+                        }}
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="file-input"
+                      onChange={handleFileChange}
+                    />
+                    {attachmentFile && (
+                      <div className="attachment-chip">
+                        <span>{attachmentFile.name}</span>
+                        <button type="button" onClick={clearAttachment}>
+                          ✕
+                        </button>
+                        <button
+                          className="primary"
+                          type="button"
+                          onClick={uploadAttachment}
+                        >
+                          Загрузить
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             {micError && <div className="alert error">{micError}</div>}
+            {attachmentError && <div className="alert error">{attachmentError}</div>}
           </div>
         )}
 
