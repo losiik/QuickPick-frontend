@@ -35,6 +35,11 @@ function App() {
   const lastRecordSecondsRef = useRef(0)
   const fileInputRef = useRef(null)
   const cameraInputRef = useRef(null)
+  const recordingModeRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const audioProcessorRef = useRef(null)
+  const audioStreamRef = useRef(null)
+  const pcmChunksRef = useRef([])
 
   const needsName = (user) =>
     user?.name === null || user?.name === undefined || user?.name === ''
@@ -449,7 +454,8 @@ function App() {
 
     try {
       const formData = new FormData()
-      formData.append('audio', blob, 'voice.webm')
+      const fileName = getAudioFileName(blob.type)
+      formData.append('audio', blob, fileName)
       const data = await apiRequestAuth(
         chatMode === 'add' ? '/api/voice/add-item' : '/api/voice/search',
         {
@@ -490,20 +496,43 @@ function App() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream)
-      chunksRef.current = []
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data)
+
+      if (supportsWebmRecorder()) {
+        recordingModeRef.current = 'media'
+        const recorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm;codecs=opus',
+        })
+        chunksRef.current = []
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            chunksRef.current.push(event.data)
+          }
         }
+        recorder.onstop = () => {
+          const blob = new Blob(chunksRef.current, { type: recorder.mimeType })
+          stream.getTracks().forEach((track) => track.stop())
+          sendVoice(blob, lastRecordSecondsRef.current)
+        }
+        recorderRef.current = recorder
+        recorder.start()
+      } else {
+        recordingModeRef.current = 'wav'
+        audioStreamRef.current = stream
+        const audioContext = new (window.AudioContext ||
+          window.webkitAudioContext)()
+        audioContextRef.current = audioContext
+        const source = audioContext.createMediaStreamSource(stream)
+        const processor = audioContext.createScriptProcessor(4096, 1, 1)
+        pcmChunksRef.current = []
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0)
+          pcmChunksRef.current.push(new Float32Array(input))
+        }
+        source.connect(processor)
+        processor.connect(audioContext.destination)
+        audioProcessorRef.current = processor
       }
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType })
-        stream.getTracks().forEach((track) => track.stop())
-        sendVoice(blob, lastRecordSecondsRef.current)
-      }
-      recorderRef.current = recorder
-      recorder.start()
+
       setRecording(true)
     } catch {
       setMicError('Нужен доступ к микрофону.')
@@ -512,9 +541,30 @@ function App() {
 
   const stopRecording = () => {
     lastRecordSecondsRef.current = recordSeconds
-    const recorder = recorderRef.current
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.stop()
+    if (recordingModeRef.current === 'media') {
+      const recorder = recorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop()
+      }
+    } else if (recordingModeRef.current === 'wav') {
+      const stream = audioStreamRef.current
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop())
+      }
+      const processor = audioProcessorRef.current
+      if (processor) {
+        processor.disconnect()
+      }
+      const audioContext = audioContextRef.current
+      if (audioContext) {
+        audioContext.close()
+      }
+      const wavBlob = encodeWav(pcmChunksRef.current)
+      sendVoice(wavBlob, lastRecordSecondsRef.current)
+      audioStreamRef.current = null
+      audioProcessorRef.current = null
+      audioContextRef.current = null
+      pcmChunksRef.current = []
     }
     setRecording(false)
   }
@@ -534,6 +584,55 @@ function App() {
 
   const isChat = step === 'chat'
   const canAttach = chatMode === 'add'
+  const supportsWebmRecorder = () =>
+    typeof MediaRecorder !== 'undefined' &&
+    MediaRecorder.isTypeSupported?.('audio/webm;codecs=opus')
+
+  const getAudioFileName = (mimeType) => {
+    if (mimeType.includes('webm')) return 'voice.webm'
+    if (mimeType.includes('wav')) return 'voice.wav'
+    if (mimeType.includes('mp4') || mimeType.includes('m4a'))
+      return 'voice.m4a'
+    return 'voice.wav'
+  }
+
+  const encodeWav = (chunks) => {
+    const sampleRate = audioContextRef.current?.sampleRate || 44100
+    const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
+    const buffer = new ArrayBuffer(44 + length * 2)
+    const view = new DataView(buffer)
+
+    const writeString = (offset, string) => {
+      for (let i = 0; i < string.length; i += 1) {
+        view.setUint8(offset + i, string.charCodeAt(i))
+      }
+    }
+
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + length * 2, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, 1, true)
+    view.setUint16(22, 1, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * 2, true)
+    view.setUint16(32, 2, true)
+    view.setUint16(34, 16, true)
+    writeString(36, 'data')
+    view.setUint32(40, length * 2, true)
+
+    let offset = 44
+    chunks.forEach((chunk) => {
+      for (let i = 0; i < chunk.length; i += 1) {
+        const s = Math.max(-1, Math.min(1, chunk[i]))
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true)
+        offset += 2
+      }
+    })
+
+    return new Blob([view], { type: 'audio/wav' })
+  }
 
   const handlePickFile = () => {
     if (fileInputRef.current) {
