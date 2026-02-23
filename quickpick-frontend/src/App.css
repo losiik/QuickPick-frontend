@@ -463,8 +463,8 @@ button:disabled {
 }
 
 .mic-button {
-  width: 40px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
   border-radius: 999px;
   background: transparent;
   color: #234ea3;
@@ -476,8 +476,8 @@ button:disabled {
 }
 
 .mic-icon {
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   display: block;
 }
 
