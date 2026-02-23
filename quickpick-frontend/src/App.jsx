@@ -437,7 +437,11 @@ function App() {
         await maybeShowAttachmentForSearch(data?.items)
       }
     } catch (err) {
-      appendMessage('assistant', `Ошибка: ${err.message}`)
+      if (chatMode === 'add') {
+        appendMessage('assistant', err.message)
+      } else {
+        appendMessage('assistant', `Ошибка: ${err.message}`)
+      }
     } finally {
       setLoading(false)
     }
