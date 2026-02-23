@@ -37,7 +37,7 @@ function App() {
   const cameraInputRef = useRef(null)
   const recordingModeRef = useRef(null)
   const audioContextRef = useRef(null)
-  const audioProcessorRef = useRef(null)
+  const audioNodeRef = useRef(null)
   const audioStreamRef = useRef(null)
   const pcmChunksRef = useRef([])
 
@@ -516,21 +516,33 @@ function App() {
         recorderRef.current = recorder
         recorder.start()
       } else {
+        if (!supportsAudioWorklet()) {
+          stream.getTracks().forEach((track) => track.stop())
+          setMicError('Запись на этом устройстве не поддерживается.')
+          return
+        }
         recordingModeRef.current = 'wav'
         audioStreamRef.current = stream
         const audioContext = new (window.AudioContext ||
           window.webkitAudioContext)()
         audioContextRef.current = audioContext
-        const source = audioContext.createMediaStreamSource(stream)
-        const processor = audioContext.createScriptProcessor(4096, 1, 1)
-        pcmChunksRef.current = []
-        processor.onaudioprocess = (event) => {
-          const input = event.inputBuffer.getChannelData(0)
-          pcmChunksRef.current.push(new Float32Array(input))
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume()
         }
-        source.connect(processor)
-        processor.connect(audioContext.destination)
-        audioProcessorRef.current = processor
+        const source = audioContext.createMediaStreamSource(stream)
+        await audioContext.audioWorklet.addModule(
+          new URL('./audioWorklet.js', import.meta.url)
+        )
+        const node = new AudioWorkletNode(audioContext, 'pcm-capture')
+        pcmChunksRef.current = []
+        node.port.onmessage = (event) => {
+          if (event.data?.type === 'pcm' && event.data?.buffer) {
+            pcmChunksRef.current.push(new Float32Array(event.data.buffer))
+          }
+        }
+        source.connect(node)
+        node.connect(audioContext.destination)
+        audioNodeRef.current = node
       }
 
       setRecording(true)
@@ -551,9 +563,9 @@ function App() {
       if (stream) {
         stream.getTracks().forEach((track) => track.stop())
       }
-      const processor = audioProcessorRef.current
-      if (processor) {
-        processor.disconnect()
+      const node = audioNodeRef.current
+      if (node) {
+        node.disconnect()
       }
       const audioContext = audioContextRef.current
       if (audioContext) {
@@ -562,7 +574,7 @@ function App() {
       const wavBlob = encodeWav(pcmChunksRef.current)
       sendVoice(wavBlob, lastRecordSecondsRef.current)
       audioStreamRef.current = null
-      audioProcessorRef.current = null
+      audioNodeRef.current = null
       audioContextRef.current = null
       pcmChunksRef.current = []
     }
@@ -587,6 +599,9 @@ function App() {
   const supportsWebmRecorder = () =>
     typeof MediaRecorder !== 'undefined' &&
     MediaRecorder.isTypeSupported?.('audio/webm;codecs=opus')
+  const supportsAudioWorklet = () =>
+    typeof AudioWorkletNode !== 'undefined' &&
+    (window.AudioContext || window.webkitAudioContext)?.prototype?.audioWorklet
 
   const getAudioFileName = (mimeType) => {
     if (mimeType.includes('webm')) return 'voice.webm'
