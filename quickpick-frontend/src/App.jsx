@@ -115,6 +115,7 @@ function App() {
   }
 
   const parseError = (data, status) => {
+    if (typeof data?.detail === 'string') return data.detail
     if (data?.detail?.[0]?.msg) return data.detail[0].msg
     if (data?.message) return data.message
     return `Ошибка ${status}`
