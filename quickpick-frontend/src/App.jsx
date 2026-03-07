@@ -6,6 +6,8 @@ import './App.css'
 const API_BASE = 'https://api.quick-pick.explaingpt.ru'
 const ACCESS_KEY = 'qp_access_token'
 const REFRESH_KEY = 'qp_refresh_token'
+const TARGET_SAMPLE_RATE = 16000
+const MAX_RECORDING_SECONDS = 600
 
 function App() {
   const [step, setStep] = useState('email')
@@ -29,17 +31,19 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
-  const recorderRef = useRef(null)
-  const chunksRef = useRef([])
+  const isRecordingRef = useRef(false)
   const recordStartRef = useRef(null)
   const lastRecordSecondsRef = useRef(0)
   const fileInputRef = useRef(null)
   const cameraInputRef = useRef(null)
-  const recordingModeRef = useRef(null)
   const audioContextRef = useRef(null)
-  const audioNodeRef = useRef(null)
-  const audioStreamRef = useRef(null)
-  const pcmChunksRef = useRef([])
+  const analyserRef = useRef(null)
+  const processorRef = useRef(null)
+  const sourceRef = useRef(null)
+  const gainRef = useRef(null)
+  const streamRef = useRef(null)
+  const audioBuffersRef = useRef([])
+  const autoStopTriggeredRef = useRef(false)
 
   const needsName = (user) =>
     user?.name === null || user?.name === undefined || user?.name === ''
@@ -71,6 +75,7 @@ function App() {
     if (!recording) {
       setRecordSeconds(0)
       recordStartRef.current = null
+      autoStopTriggeredRef.current = false
       return
     }
 
@@ -79,9 +84,21 @@ function App() {
       if (!recordStartRef.current) return
       const diff = Math.floor((Date.now() - recordStartRef.current) / 1000)
       setRecordSeconds(diff)
+      if (
+        diff >= MAX_RECORDING_SECONDS &&
+        !autoStopTriggeredRef.current &&
+        isRecordingRef.current
+      ) {
+        autoStopTriggeredRef.current = true
+        stopRecording()
+      }
     }, 500)
 
     return () => clearInterval(timer)
+  }, [recording])
+
+  useEffect(() => {
+    isRecordingRef.current = recording
   }, [recording])
 
   const getAccessToken = () => localStorage.getItem(ACCESS_KEY)
@@ -264,6 +281,7 @@ function App() {
   }
 
   const handleLogout = () => {
+    cleanupRecording()
     clearTokens()
     setEmail('')
     setCode('')
@@ -300,6 +318,7 @@ function App() {
   }
 
   const closeChat = () => {
+    cleanupRecording()
     setChatMode(null)
     setChatInput('')
     setChatMessages([])
@@ -396,6 +415,95 @@ function App() {
     }
   }
 
+  const cleanupRecording = () => {
+    processorRef.current?.disconnect()
+    analyserRef.current?.disconnect()
+    sourceRef.current?.disconnect()
+    gainRef.current?.disconnect()
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    analyserRef.current = null
+    processorRef.current = null
+    sourceRef.current = null
+    gainRef.current = null
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {})
+    }
+    audioContextRef.current = null
+    audioBuffersRef.current = []
+    recordStartRef.current = null
+  }
+
+  useEffect(() => {
+    return () => {
+      cleanupRecording()
+    }
+  }, [])
+
+  const mergeAudioBuffers = (buffers) => {
+    const totalLength = buffers.reduce((sum, chunk) => sum + chunk.length, 0)
+    const merged = new Float32Array(totalLength)
+    let offset = 0
+    buffers.forEach((chunk) => {
+      merged.set(chunk, offset)
+      offset += chunk.length
+    })
+    return merged
+  }
+
+  const resampleBuffer = (buffer, sourceRate, targetRate) => {
+    if (targetRate >= sourceRate || buffer.length === 0) {
+      return buffer
+    }
+    const ratio = sourceRate / targetRate
+    const newLength = Math.floor(buffer.length / ratio)
+    const resampled = new Float32Array(newLength)
+    for (let i = 0; i < newLength; i += 1) {
+      const position = i * ratio
+      const leftIndex = Math.floor(position)
+      const rightIndex = Math.min(leftIndex + 1, buffer.length - 1)
+      const fraction = position - leftIndex
+      const leftValue = buffer[leftIndex] ?? 0
+      const rightValue = buffer[rightIndex] ?? 0
+      resampled[i] = leftValue + (rightValue - leftValue) * fraction
+    }
+    return resampled
+  }
+
+  const buildWavBlob = (samples, sampleRate) => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2)
+    const view = new DataView(buffer)
+
+    const writeString = (offset, value) => {
+      for (let i = 0; i < value.length; i += 1) {
+        view.setUint8(offset + i, value.charCodeAt(i))
+      }
+    }
+
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + samples.length * 2, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, 1, true)
+    view.setUint16(22, 1, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * 2, true)
+    view.setUint16(32, 2, true)
+    view.setUint16(34, 16, true)
+    writeString(36, 'data')
+    view.setUint32(40, samples.length * 2, true)
+
+    let index = 44
+    for (let i = 0; i < samples.length; i += 1) {
+      const sample = Math.max(-1, Math.min(1, samples[i]))
+      view.setInt16(index, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+      index += 2
+    }
+
+    return new Blob([view], { type: 'audio/wav' })
+  }
+
   const handleSendMessage = async (event) => {
     event.preventDefault()
     setError('')
@@ -458,8 +566,7 @@ function App() {
 
     try {
       const formData = new FormData()
-      const fileName = getAudioFileName(blob.type)
-      formData.append('audio', blob, fileName)
+      formData.append('audio', blob, `voice-message-${Date.now()}.wav`)
       const data = await apiRequestAuth(
         chatMode === 'add' ? '/api/voice/add-item' : '/api/voice/search',
         {
@@ -493,96 +600,83 @@ function App() {
   }
 
   const startRecording = async () => {
+    if (isRecordingRef.current) return
     setMicError('')
     if (!navigator.mediaDevices?.getUserMedia) {
-      setMicError('Браузер не поддерживает запись звука.')
+      setMicError('Запись голоса недоступна в этом браузере')
       return
     }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      const AudioContextCtor =
+        window.AudioContext ||
+        window.webkitAudioContext
 
-      if (supportsWebmRecorder()) {
-        recordingModeRef.current = 'media'
-        const recorder = new MediaRecorder(stream, {
-          mimeType: 'audio/webm;codecs=opus',
-        })
-        chunksRef.current = []
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            chunksRef.current.push(event.data)
-          }
-        }
-        recorder.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: recorder.mimeType })
-          stream.getTracks().forEach((track) => track.stop())
-          sendVoice(blob, lastRecordSecondsRef.current)
-        }
-        recorderRef.current = recorder
-        recorder.start()
-      } else {
-        if (!supportsAudioWorklet()) {
-          stream.getTracks().forEach((track) => track.stop())
-          setMicError('Запись на этом устройстве не поддерживается.')
-          return
-        }
-        recordingModeRef.current = 'wav'
-        audioStreamRef.current = stream
-        const audioContext = new (window.AudioContext ||
-          window.webkitAudioContext)()
-        audioContextRef.current = audioContext
-        if (audioContext.state === 'suspended') {
-          await audioContext.resume()
-        }
-        const source = audioContext.createMediaStreamSource(stream)
-        await audioContext.audioWorklet.addModule(
-          new URL('./audioWorklet.js', import.meta.url)
-        )
-        const node = new AudioWorkletNode(audioContext, 'pcm-capture')
-        pcmChunksRef.current = []
-        node.port.onmessage = (event) => {
-          if (event.data?.type === 'pcm' && event.data?.buffer) {
-            pcmChunksRef.current.push(new Float32Array(event.data.buffer))
-          }
-        }
-        source.connect(node)
-        node.connect(audioContext.destination)
-        audioNodeRef.current = node
+      if (!AudioContextCtor) {
+        setMicError('Запись голоса недоступна в этом браузере')
+        cleanupRecording()
+        return
       }
 
+      const audioContext = new AudioContextCtor()
+      audioContextRef.current = audioContext
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume()
+      }
+
+      const source = audioContext.createMediaStreamSource(stream)
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 2048
+      const processor = audioContext.createScriptProcessor(4096, 1, 1)
+      const gain = audioContext.createGain()
+      gain.gain.value = 0
+
+      source.connect(analyser)
+      analyser.connect(processor)
+      processor.connect(gain)
+      gain.connect(audioContext.destination)
+
+      processor.onaudioprocess = (event) => {
+        if (!isRecordingRef.current) return
+        const input = event.inputBuffer.getChannelData(0)
+        audioBuffersRef.current.push(new Float32Array(input))
+      }
+
+      analyserRef.current = analyser
+      processorRef.current = processor
+      sourceRef.current = source
+      gainRef.current = gain
+      audioBuffersRef.current = []
+      isRecordingRef.current = true
       setRecording(true)
     } catch {
-      setMicError('Нужен доступ к микрофону.')
+      setMicError('Не удалось получить доступ к микрофону')
+      cleanupRecording()
     }
   }
 
-  const stopRecording = () => {
+  const stopRecording = async () => {
+    if (!isRecordingRef.current) return
     lastRecordSecondsRef.current = recordSeconds
-    if (recordingModeRef.current === 'media') {
-      const recorder = recorderRef.current
-      if (recorder && recorder.state !== 'inactive') {
-        recorder.stop()
-      }
-    } else if (recordingModeRef.current === 'wav') {
-      const stream = audioStreamRef.current
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop())
-      }
-      const node = audioNodeRef.current
-      if (node) {
-        node.disconnect()
-      }
-      const audioContext = audioContextRef.current
-      if (audioContext) {
-        audioContext.close()
-      }
-      const wavBlob = encodeWav(pcmChunksRef.current)
-      sendVoice(wavBlob, lastRecordSecondsRef.current)
-      audioStreamRef.current = null
-      audioNodeRef.current = null
-      audioContextRef.current = null
-      pcmChunksRef.current = []
-    }
+    isRecordingRef.current = false
     setRecording(false)
+    setRecordSeconds(0)
+
+    const buffers = audioBuffersRef.current
+    const sampleRate = audioContextRef.current?.sampleRate ?? 44100
+    cleanupRecording()
+
+    if (!buffers.length) return
+    const merged = mergeAudioBuffers(buffers)
+    const targetRate = Math.min(TARGET_SAMPLE_RATE, sampleRate)
+    const processed =
+      targetRate < sampleRate
+        ? resampleBuffer(merged, sampleRate, targetRate)
+        : merged
+    const wavBlob = buildWavBlob(processed, targetRate)
+    await sendVoice(wavBlob, lastRecordSecondsRef.current)
   }
 
   const formatSeconds = (value) => {
@@ -600,58 +694,6 @@ function App() {
 
   const isChat = step === 'chat'
   const canAttach = chatMode === 'add'
-  const supportsWebmRecorder = () =>
-    typeof MediaRecorder !== 'undefined' &&
-    MediaRecorder.isTypeSupported?.('audio/webm;codecs=opus')
-  const supportsAudioWorklet = () =>
-    typeof AudioWorkletNode !== 'undefined' &&
-    (window.AudioContext || window.webkitAudioContext)?.prototype?.audioWorklet
-
-  const getAudioFileName = (mimeType) => {
-    if (mimeType.includes('webm')) return 'voice.webm'
-    if (mimeType.includes('wav')) return 'voice.wav'
-    if (mimeType.includes('mp4') || mimeType.includes('m4a'))
-      return 'voice.m4a'
-    return 'voice.wav'
-  }
-
-  const encodeWav = (chunks) => {
-    const sampleRate = audioContextRef.current?.sampleRate || 44100
-    const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
-    const buffer = new ArrayBuffer(44 + length * 2)
-    const view = new DataView(buffer)
-
-    const writeString = (offset, string) => {
-      for (let i = 0; i < string.length; i += 1) {
-        view.setUint8(offset + i, string.charCodeAt(i))
-      }
-    }
-
-    writeString(0, 'RIFF')
-    view.setUint32(4, 36 + length * 2, true)
-    writeString(8, 'WAVE')
-    writeString(12, 'fmt ')
-    view.setUint32(16, 16, true)
-    view.setUint16(20, 1, true)
-    view.setUint16(22, 1, true)
-    view.setUint32(24, sampleRate, true)
-    view.setUint32(28, sampleRate * 2, true)
-    view.setUint16(32, 2, true)
-    view.setUint16(34, 16, true)
-    writeString(36, 'data')
-    view.setUint32(40, length * 2, true)
-
-    let offset = 44
-    chunks.forEach((chunk) => {
-      for (let i = 0; i < chunk.length; i += 1) {
-        const s = Math.max(-1, Math.min(1, chunk[i]))
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true)
-        offset += 2
-      }
-    })
-
-    return new Blob([view], { type: 'audio/wav' })
-  }
 
   const handlePickFile = () => {
     if (fileInputRef.current) {
