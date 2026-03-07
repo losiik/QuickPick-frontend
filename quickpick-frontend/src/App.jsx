@@ -6,7 +6,7 @@ import './App.css'
 const API_BASE = 'https://api.quick-pick.explaingpt.ru'
 const ACCESS_KEY = 'qp_access_token'
 const REFRESH_KEY = 'qp_refresh_token'
-const TARGET_SAMPLE_RATE = 16000
+const TARGET_SAMPLE_RATE = 48000
 const MAX_RECORDING_SECONDS = 600
 
 function App() {
